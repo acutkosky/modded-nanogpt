@@ -88,11 +88,11 @@ name="muon_baseline"
 args=(
     # basic configs
     "--run_name ${name}"
-    "--wandb_project visualize_nanogpt_muon"  # comment out this line to use default project name
-    "--log_folder test_mango"
+    "--wandb_project visualize_nanogpt_muon_ashok"  # comment out this line to use default project name
+    "--log_folder test_muon"
     "--random_seed 42"
     # optimizer configs
-    "--optimizer mango"
+    "--optimizer muon"
     "--mango_mat_lr ${lr}"
     "--mango_mat_beta2 ${beta2}"
     "--mango_mat_scale_rms ${rms}"
@@ -122,7 +122,7 @@ args=(
 
 # -----------------------------------------------------------------------------
 # Redirect SCC outputs.
-BASE_DIR=/projectnb/aclab/qinziz/nanogpt-mango      # change your base path here
+BASE_DIR=/projectnb/aclab/cutkosky/modded-nanogpt-mango      # change your base path here
 DATE=$(date +"%Y-%m-%d")
 OUTPUT_PATH=$BASE_DIR/scc_outputs/$DATE
 mkdir -p $OUTPUT_PATH
@@ -132,7 +132,7 @@ mkdir -p $OUTPUT_PATH
 GPU=L40S
 NODES=1
 mode=0
-mode=1      # uncomment to run locally instead of submit to scc
+# mode=1      # uncomment to run locally instead of submit to scc
 # mode=2      # uncomment to run batch submits
 
 submit_job() {
