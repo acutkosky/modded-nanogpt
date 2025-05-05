@@ -29,7 +29,7 @@ import ast
 import wandb
 from dataclasses import asdict
 # move optimizers to a different folder for convenient configurations
-from optimizers import Muon, Mango, SFMuon
+from optimizers import Muon, Mango, NormOpt
 
 # -----------------------------------------------------------------------------
 # Additional argparser to interface with cmd and parallel submit
@@ -79,6 +79,14 @@ def parse_args():
     parser.add_argument("--sfmuon_lr", type=float, default=0.05)
     parser.add_argument("--sfmuon_momentum", type=str2tuple, default="0.85,0.95,300")
     parser.add_argument("--sfmuon_nesterov_beta", type=str2tuple, default="0.85,0.95,300")
+
+    parser.add_argument("--muon_frank_wolfe", type=str2bool, default=False, help="use frank wolfe in muon")
+    parser.add_argument("--muon_fw_momentum", type=float, default=False, help="extra momentum for fw")
+    parser.add_argument("--muon_lr", type=float, default=0.05, help="muon learning rate")
+    parser.add_argument("--muon_momentum", type=float, default=0.95, help="muon momentum")
+    parser.add_argument("--normopt_lr", type=float, default=0.05, help="normopt learning rate")
+    parser.add_argument("--normopt_momentum", type=float, default=0.95, help="normopt momentum")
+    parser.add_argument("--exp_random_scaling", type=str2bool, default=False, help="use exp random scaling")
     return parser.parse_args()
 
 cmd_args = parse_args()
@@ -512,8 +520,11 @@ if cmd_args.optimizer == "muon":
     # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
     # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
     optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
-    optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, rank=rank, world_size=world_size)
+    optimizer2 = Muon(hidden_matrix_params, lr=cmd_args.muon_lr, momentum=cmd_args.muon_momentum, frank_wolfe=cmd_args.muon_frank_wolfe, fw_momentum=cmd_args.muon_fw_momentum, rank=rank, world_size=world_size)
     optimizers = [optimizer1, optimizer2]
+elif cmd_args.optimizer == "normopt":
+    optimizer1 = NormOpt(model, lr=cmd_args.normopt_lr, momentum=cmd_args.normopt_momentum, rank=rank, world_size=world_size)
+    optimizers = [optimizer1]
 elif cmd_args.optimizer == "mango":
     adam_params = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
     # optimizer1 = Mango(adam_params, beta1=0.8, beta2=0.95, nesterov=False,
@@ -557,11 +568,13 @@ for opt in optimizers:
 def get_lr(step: int):
     x = step / args.num_iterations # progress in training
     assert 0 <= x < 1
+
+    scaling = -torch.log(1.0-torch.rand(1)).item() if cmd_args.exp_random_scaling else 1.0
     if x < 1 - args.cooldown_frac:
-        return 1.0
+        return 1.0 * scaling
     else:
         w = (1 - x) / args.cooldown_frac
-        return w * 1.0 + (1 - w) * 0.1
+        return (w * 1.0 + (1 - w) * 0.1) * scaling
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
@@ -690,7 +703,7 @@ for step in range(train_steps + 1):
     # set optimization hyperparameters
     for opt in optimizers:
         for group in opt.param_groups:
-            group["lr"] = group["initial_lr"] * get_lr(step)
+            group["lr"] = group["initial_lr"] * get_lr(step) 
     # muon-specific
     if cmd_args.optimizer == "muon":
         for group in optimizer2.param_groups:

@@ -56,16 +56,17 @@ class Muon(torch.optim.Optimizer):
         nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
         ns_steps: The number of Newton-Schulz iteration steps to use.
     """
-    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5, rank=0, world_size=1):
+    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, frank_wolfe=False, fw_momentum=0.8, ns_steps=5, rank=0, world_size=1):
         self.rank = rank
         self.world_size = world_size
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, frank_wolfe=frank_wolfe, fw_momentum=fw_momentum, ns_steps=ns_steps)
         params: list[Tensor] = [*params]
         param_groups = []
         for size in {p.numel() for p in params}:
             b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
             group = dict(params=[p for p in params if p.numel() == size],
-                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)])
+                         update_buffer=b, update_buffer_views=[b[i] for i in range(world_size)],
+                         sum_weights=[torch.zeros(1, dtype=torch.bfloat16, device=p.device) for p in params if p.numel() == size])
             param_groups.append(group)
         super().__init__(param_groups, defaults)
 
@@ -76,6 +77,7 @@ class Muon(torch.optim.Optimizer):
             update_buffer_views: list[Tensor] = group["update_buffer_views"]
             # generate weight updates in distributed fashion
             params: list[Tensor] = group["params"]
+            sum_weights: list[Tensor] = group["sum_weights"]
             handle = None
             params_world = None
             def update_prev(): # optimized Muon implementation contributed by @YouJiacheng
@@ -87,14 +89,29 @@ class Muon(torch.optim.Optimizer):
                 if base_i + self.rank < len(params):
                     p = params[base_i + self.rank]
                     g = p.grad
+                    sum_weight = sum_weights[base_i + self.rank]
                     assert g is not None
                     state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
+                        state["prev_update"] = torch.zeros_like(g).bfloat16()
                     buf: Tensor = state["momentum_buffer"]
-                    buf.lerp_(g, 1 - group["momentum"])
-                    g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
+                    prev_update: Tensor = state["prev_update"]
+                    if not group["frank_wolfe"]:
+                        buf.lerp_(g, 1 - group["momentum"])
+                        g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+                        g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
+                        prev_update.copy_(g)
+                    else:
+                        
+
+                        buf.lerp_(g, 1 - group["momentum"])
+                        g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+                        g_zeropower = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
+                        prev_update.lerp_(g_zeropower, 1-group["fw_momentum"])
+                        g = prev_update
+                        g = g.flatten().bfloat16()
+
                 else:
                     g = update_buffer_views[self.rank]
                 if base_i > 0:

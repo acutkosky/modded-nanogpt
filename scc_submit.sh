@@ -80,7 +80,15 @@ script="train"
 beta2=0
 rms=False
 lr=0.05
-name="muon_baseline"
+muon_lr=0.05
+momentum=0.05
+muon_momentum=0.95
+muon_fw_momentum=0.2
+muon_frank_wolfe=True
+
+exp_random_scaling=False
+name="fw_fwmom${muon_fw_momentum}_mom${muon_momentum}_lr${muon_lr}_rs${exp_random_scaling}" #muon_lr${muon_lr}_fw${muon_frank_wolfe}_wfw${muon_weighted_FW}"
+
 # rms=True
 # lr=7.5e-4
 # name="muon_rms-False_eps1e-10_lr7.5e-4"
@@ -88,18 +96,26 @@ name="muon_baseline"
 args=(
     # basic configs
     "--run_name ${name}"
-    "--wandb_project visualize_nanogpt_muon_ashok"  # comment out this line to use default project name
+    "--wandb_project nanogpt_muon_frank_wolfe_ashok"  # comment out this line to use default project name
     "--log_folder test_muon"
     "--random_seed 42"
     # optimizer configs
     "--optimizer muon"
+    "--muon_frank_wolfe ${muon_frank_wolfe}"
+    "--muon_fw_momentum ${muon_fw_momentum}"
+    "--muon_momentum ${muon_momentum}"
+    "--muon_lr ${muon_lr}"
     "--mango_mat_lr ${lr}"
     "--mango_mat_beta2 ${beta2}"
     "--mango_mat_scale_rms ${rms}"
     "--mango_mat_precond_power 0.5"
+    "--exp_random_scaling ${exp_random_scaling}"
     # some unrelated configs for convenience
-    "--compile_only True"  # turn on to warmup the node (for the first run)
-    "--advanced_log False"  # turn on to log rms norms
+    "--compile_only False"  # turn on to warmup the node (for the first run)
+    "--advanced_log False"  # turn on to log rms 
+
+    "--normopt_lr ${lr}"
+    "--normopt_momentum ${momentum}"
 )
 
 # lr=0.05
