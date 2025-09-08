@@ -363,7 +363,7 @@ class Hyperparameters:
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
     save_checkpoint = False
     # lr scheduling
-    final_lr_scale = 0.01
+    final_lr_scale = 0.0
 args = Hyperparameters()
 
 run_id = int(os.environ.get("RUN_ID", 0))
