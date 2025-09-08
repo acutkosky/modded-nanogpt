@@ -366,7 +366,11 @@ class Hyperparameters:
     final_lr_scale = 0.0
 args = Hyperparameters()
 
-run_id = int(os.environ.get("RUN_ID", 0))
+run_id = os.environ.get("RUN_ID", 0)
+try:
+    run_id = f"{int(run_id):03d}"
+except:
+    run_id = str(run_id)
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
@@ -380,7 +384,7 @@ master_process = (rank == 0) # this process will do logging, checkpointing etc.
 
 # begin logging
 if master_process:
-    run_id_full = f"{run_id:03d}_{uuid.uuid4()}"
+    run_id_full = f"{run_id}_{uuid.uuid4()}"
     os.makedirs("logs", exist_ok=True)
     logfile = f"logs/{run_id_full}.txt"
     print(logfile)
