@@ -547,8 +547,8 @@ for step in range(train_steps + 1):
         frac = min(step / 300, 1) # momentum warmup for muon
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
 
-        smooth_frac = min(step / 2000, 1) # update_smoothing cooldown for muon
-        group["update_smoothing"] = (1 - smooth_frac) * 0.3 + smooth_frac * 0.1
+        # smooth_frac = min(step / 2000, 1) # update_smoothing cooldown for muon
+        # group["update_smoothing"] = (1 - smooth_frac) * 0.3 + smooth_frac * 0.1
     # step the optimizers
     for opt in optimizers:
         torch.futures.collect_all(opt2futures[opt]).wait()
