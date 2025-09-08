@@ -362,6 +362,8 @@ class Hyperparameters:
     # evaluation and logging
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
     save_checkpoint = False
+    # lr scheduling
+    final_lr_scale = 0.01
 args = Hyperparameters()
 
 run_id = int(os.environ.get("RUN_ID", 0))
@@ -445,7 +447,7 @@ def get_lr(step: int):
     if x < 1 - args.cooldown_frac:
         return 1.0
     else:
-        return (1 - x) / args.cooldown_frac
+        return (1 - x) / args.cooldown_frac * (1-args.final_lr_scale) + args.final_lr_scale
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
