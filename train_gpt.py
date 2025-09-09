@@ -193,7 +193,7 @@ class Muon(torch.optim.Optimizer):
                     state = self.state[p]
                     if len(state) == 0:
                         state["momentum_buffer"] = torch.zeros_like(grad)
-                        state["update_smoothing_buffer"] = torch.zeros_like(grad)
+                        state["update_smoothing_buffer"] = torch.zeros_like(grad, dtype=torch.bfloat16)
                     momentum_buffer = state["momentum_buffer"]
                     update_smoothing_buffer = state["update_smoothing_buffer"]
                     p.mul_(1 - eff_weight_decay)
