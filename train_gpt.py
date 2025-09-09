@@ -568,7 +568,7 @@ class Hyperparameters:
     num_iterations = 1750 # number of iterations to run
     cooldown_frac = 0.45 # fraction of training spent cooling down the learning rate
     # evaluation and logging
-    val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
+    val_loss_every = 25 # every how many steps to evaluate val loss? 0 for only at the end
     save_checkpoint = False
 args = Hyperparameters()
 
