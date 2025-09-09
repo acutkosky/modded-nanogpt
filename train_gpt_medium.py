@@ -24,7 +24,7 @@ torch._inductor.config.coordinate_descent_tuning = True # we allow this flag for
 # DistAdam optimizer
 
 class DistAdam(torch.optim.Optimizer):
-    def __init__(self, params, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), update_smoothing: float = 0.1, eps: float = 1e-8, weight_decay: float = 0.01):
+    def __init__(self, param, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), update_smoothing: float = 0.1, eps: float = 1e-8, weight_decay: float = 0.01):
         defaults = dict(lr=lr, betas=betas, update_smoothing=update_smoothing, eps=eps, weight_decay=weight_decay)
         params = list(params)
         sizes = {p.shape for p in params}
@@ -517,9 +517,13 @@ assert len(optimized_parameters_set) == sum(len(lst) for lst in params_collectio
 adam_param_groups = [dict(params=head_params, lr=1/320), dict(params=embed_params, lr=0.3), dict(params=scalar_params, lr=0.015)]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
-optimizer1 = DistAdam(adam_param_groups, betas=(0.8, 0.95), update_smoothing=0.1, eps=1e-10, weight_decay=0.0)
+adam_opts = [
+    DistAdam(params=group["params"], lr=group["lr"], beta=(0.8,0.95), update_smoothing=0.1, eps=1e-10,weight_decay=0.0) for group in adam_param_groups
+]
+#optimizer1 = DistAdam(adam_param_groups, betas=(0.8, 0.95), update_smoothing=0.1, eps=1e-10, weight_decay=0.0)
 optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.95, update_smoothing=0.1, extra_update=0.01, rank=rank, world_size=world_size)
-optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
+optimizers = adam_opts + [optimizers]
+#optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
     return [p for group in opt.param_groups for p in group["params"]]
 opt2params = {opt: opt_params(opt) for opt in optimizers}
