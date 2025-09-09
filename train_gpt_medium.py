@@ -19,6 +19,88 @@ import torch.distributed as dist
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 torch._inductor.config.coordinate_descent_tuning = True # we allow this flag for medium track
 
+
+# -----------------------------------------------------------------------------
+# DistAdam optimizer
+
+class DistAdam(torch.optim.Optimizer):
+    def __init__(self, params, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), update_smoothing: float = 0.1, eps: float = 1e-8, weight_decay: float = 0.01):
+        defaults = dict(lr=lr, betas=betas, update_smoothing=update_smoothing, eps=eps, weight_decay=weight_decay)
+        params = list(params)
+        sizes = {p.shape for p in params}
+        # create one buffer per unique parameter-size
+        param_groups = []
+        for size in sizes:
+            group_params = [p for p in params if p.shape == size]
+            param_groups.append(dict(params=group_params))
+        super().__init__(param_groups, defaults)
+        # DistributedAdam implementation by @vagrawal
+
+    @torch.compile
+    @torch.no_grad()
+    def step(self):
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        reduce_scatter_futures: list[torch.Future] = []
+        all_reduce_futures: list[torch.Future] = []
+        grad_slices = []
+        for group in self.param_groups:
+            params: list[Tensor] = group["params"]
+            grad = torch.empty_like(params[-1])
+            for base_i in range(len(params)):
+                grad = params[base_i].grad
+                rank_size = grad.shape[0] // world_size
+                grad_slice = torch.empty_like(grad[:rank_size])
+                reduce_scatter_futures.append(dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future())
+                grad_slices.append(grad_slice)
+
+        idx = 0
+        for group in self.param_groups:
+            beta1, beta2 = group['betas']
+            eps = group['eps']
+            wd = group['weight_decay']
+            params = group['params']
+            update_smoothing = group["update_smoothing"]
+            for base in range(len(params)):
+                reduce_scatter_futures[idx].wait()
+                p = params[base]
+                rank_size = p.shape[0] // world_size
+                p_slice = p[rank * rank_size:(rank + 1) * rank_size]
+                lr = group['lr'] * getattr(p, "lr_mul", 1.0)
+                state = self.state[p]
+                g_slice = grad_slices[idx]
+                # State init
+                if not state:
+                    state['step'] = torch.tensor(0, dtype=torch.int64, device=p.device)
+                    state['exp_avg'] = torch.zeros_like(p_slice)
+                    state['exp_avg_sq'] = torch.zeros_like(p_slice)
+                    state["smoothed_update_buffer"] = torch.zeros_like(p_slice)
+                exp_avg = state['exp_avg']
+                exp_avg_sq = state['exp_avg_sq']
+                smoothed_update_buffer = state["smoothed_update_buffer"]
+                state['step'] += 1
+                t = state['step']
+                # weight decay
+                if wd != 0:
+                    eff_weight_decay = lr * wd * getattr(p, "wd_mul", 1.0)
+                    p_slice.mul_(1 - eff_weight_decay)
+                # update running averages
+                exp_avg.mul_(beta1).add_(g_slice, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(g_slice, g_slice, value=1 - beta2)
+                # bias corrections
+                bias1 = 1 - beta1 ** t
+                bias2 = 1 - beta2 ** t
+                # compute step
+                denom = exp_avg_sq.sqrt().add_(eps)
+                step_size = lr * (torch.sqrt(bias2) / bias1)
+                update = exp_avg.div(denom).mul_(step_size)
+                smoothed_update_buffer.mul_(update_smoothing).add_(update, alpha=1.0-update_smoothing)
+                p_slice.add_(other=smoothed_update, alpha=-1.0)
+                idx += 1
+                all_reduce_futures.append(dist.all_gather_into_tensor(p, p_slice, async_op=True).get_future())
+        torch.futures.collect_all(all_reduce_futures).wait()
+
+
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
@@ -435,7 +517,7 @@ assert len(optimized_parameters_set) == sum(len(lst) for lst in params_collectio
 adam_param_groups = [dict(params=head_params, lr=1/320), dict(params=embed_params, lr=0.3), dict(params=scalar_params, lr=0.015)]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
-optimizer1 = torch.optim.AdamW(adam_param_groups, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0, fused=True)
+optimizer1 = DistAdam(adam_param_groups, betas=(0.8, 0.95), update_smoothing=0.1, eps=1e-10, weight_decay=0.0)
 optimizer2 = Muon(hidden_matrix_params, lr=0.025, momentum=0.95, update_smoothing=0.1, extra_update=0.01, rank=rank, world_size=world_size)
 optimizers: list[torch.optim.Optimizer] = [optimizer1, optimizer2]
 def opt_params(opt: torch.optim.Optimizer) -> list[nn.Parameter]:
