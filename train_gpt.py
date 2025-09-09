@@ -588,8 +588,8 @@ logfile = None
 if master_process:
     run_id = uuid.uuid4()
     run_tag = os.environ.get("RUN_ID", "000")
-    os.makedirs("logs", exist_ok=True)
-    logfile = f"logs/{run_tag}_{run_id}.txt"
+    os.makedirs("logs_small", exist_ok=True)
+    logfile = f"logs_small/{run_tag}_{run_id}.txt"
     print(logfile)
 def print0(s, console=False):
     if master_process:
@@ -718,8 +718,8 @@ for step in range(train_steps + 1):
     if last_step:
         if master_process and args.save_checkpoint:
             log = dict(step=step, code=code, model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
-            os.makedirs(f"logs/{run_id}", exist_ok=True)
-            torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
+            os.makedirs(f"logs_small/{run_id}", exist_ok=True)
+            torch.save(log, f"logs_small/{run_id}/state_step{step:06d}.pt")
         # the last step only has the validation loop, so break to avoid training
         break
 
