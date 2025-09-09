@@ -147,8 +147,8 @@ class Muon(torch.optim.Optimizer):
     Warning: This optimizer should not be used for the embedding layer, the final fully connected layer,
     or any {0,1}-D parameters; those should all be optimized by a standard method (e.g., AdamW).
     """
-    def __init__(self, params, lr=0.02, weight_decay=0.01, momentum=0.95):
-        defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum)
+    def __init__(self, params, lr=0.02, weight_decay=0.01, momentum=0.95, update_smoothing=0.1):
+        defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum, update_smoothing=update_smoothing)
         params = list(params)
         sizes = {p.shape for p in params}
         # create one buffer per unique parameter-size
@@ -182,6 +182,7 @@ class Muon(torch.optim.Optimizer):
             params: list[Tensor] = group["params"]
             params_pad = params + [torch.empty_like(params[-1])] * world_size
             momentum = group["momentum"]
+            update_smoothing = group["update_smoothing"]
             for base_i in range(0, len(params), world_size):
                 reduce_scatter_futures[idx].wait()
                 if base_i + rank < len(params):
@@ -192,12 +193,15 @@ class Muon(torch.optim.Optimizer):
                     state = self.state[p]
                     if len(state) == 0:
                         state["momentum_buffer"] = torch.zeros_like(grad)
+                        state["update_smoothing_buffer"] = torch.zeros_like(grad)
                     momentum_buffer = state["momentum_buffer"]
+                    update_smoothing_buffer = state["update_smoothing_buffer"]
                     p.mul_(1 - eff_weight_decay)
                     momentum_buffer.lerp_(grad, 1 - momentum)
                     grad = grad.lerp_(momentum_buffer, momentum)
                     v = zeropower_via_newtonschulz5(grad.bfloat16(), 5)
-                    p.add_(other=v, alpha=-eff_lr)
+                    update_smoothing_buffer.lerp_(v, 1-update_smoothing)
+                    p.add_(other=update_smoothing_buffer, alpha=-eff_lr)
                 idx += 1
                 all_reduce_futures.append(dist.all_gather(params_pad[base_i:base_i + world_size], params_pad[base_i + rank], async_op=True).get_future())
         torch.futures.collect_all(all_reduce_futures).wait()
@@ -583,8 +587,9 @@ master_process = (rank == 0) # this process will do logging, checkpointing etc.
 logfile = None
 if master_process:
     run_id = uuid.uuid4()
+    run_tag = os.environ.get("RUN_ID", "000")
     os.makedirs("logs", exist_ok=True)
-    logfile = f"logs/{run_id}.txt"
+    logfile = f"logs/{run_tag}_{run_id}.txt"
     print(logfile)
 def print0(s, console=False):
     if master_process:
@@ -622,7 +627,7 @@ head_params = [model.lm_head.weight]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = DistAdam(scalar_params + head_params + embed_params, lr=0.008, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0)
-optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, weight_decay=0.0)
+optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, update_smoothing=0.1, weight_decay=0.0)
 optimizers = [optimizer1, optimizer2]
 for opt in optimizers:
     for group in opt.param_groups:
