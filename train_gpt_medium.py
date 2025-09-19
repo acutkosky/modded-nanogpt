@@ -916,7 +916,7 @@ for step in range(train_steps + 1):
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
         
         smoothing_frac = min(step / 3000, 1)  # update_smoothing cooldown for muon
-        group["update_smoothing"] = (1 - frac) * 0.5 + frac * 0.2
+        group["update_smoothing"] = (1 - smoothing_frac) * 0.5 + smoothing_frac * 0.2
     # step the optimizers
     for opt in inner_optimizers:
         torch.futures.collect_all(opt2futures[opt]).wait()
