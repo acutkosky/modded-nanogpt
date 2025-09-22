@@ -914,7 +914,9 @@ for step in range(train_steps + 1):
     for group in inner_hidden_optim.param_groups:
         frac = min(step / 300, 1)  # momentum warmup for muon
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
-        group["update_smoothing"] = (1 - frac) * 0.5 + frac * 0.2
+
+        smoothing_anneal_frac = min(step / 3000, 1) # smoothing
+        group["update_smoothing"] = (1 - smoothing_anneal_frac) * 0.4 + smoothing_anneal_frac * 0.2
     # step the optimizers
     for opt in inner_optimizers:
         torch.futures.collect_all(opt2futures[opt]).wait()
