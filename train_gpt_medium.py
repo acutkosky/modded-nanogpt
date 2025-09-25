@@ -625,7 +625,7 @@ class Hyperparameters:
     train_seq_len = 64 * 1024  # FlexAttention sequence length
     val_seq_len = 4 * 64 * 1024  # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 5600  # number of iterations to run
+    num_iterations = 5580  # number of iterations to run
     cooldown_frac = 0.7  # fraction of training spent cooling down the learning rate
     final_lr_scale = 0.01
     # architecture
@@ -916,7 +916,7 @@ for step in range(train_steps + 1):
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
 
         smoothing_anneal_frac = min(step / 3000, 1) # smoothing
-        group["update_smoothing"] = (1 - smoothing_anneal_frac) * 0.0 + smoothing_anneal_frac * 0.0
+        group["update_smoothing"] = (1 - smoothing_anneal_frac) * 0.3 + smoothing_anneal_frac * 0.2
     # step the optimizers
     for opt in inner_optimizers:
         torch.futures.collect_all(opt2futures[opt]).wait()
