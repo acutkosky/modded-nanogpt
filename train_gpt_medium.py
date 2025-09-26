@@ -764,7 +764,7 @@ inner_optimizers = [
     )
 ]
 inner_hidden_optim = Muon(
-    hidden_matrix_params, lr=0.035, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
+    hidden_matrix_params, lr=0.03, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
 )
 inner_optimizers += [inner_hidden_optim]
 outer_optim = Snoo(model, lr=0.68, momentum=0.37, k=28)
