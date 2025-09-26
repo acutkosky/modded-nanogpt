@@ -31,6 +31,59 @@ torch._inductor.config.coordinate_descent_tuning = (
 # torch._dynamo.config.compiled_autograd = True
 
 
+
+class OptimisticLinear(torch.autograd.Function):
+
+    @staticmethod
+    def forward(x, W, alpha_x, alpha_w):
+        return torch.einsum("...i,ji->...j", x, W)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, W, alpha_x, alpha_w= inputs
+        ctx.save_for_backward(x, W)
+        ctx.opt_data = (alpha_x, alpha_w)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, W = ctx.saved_tensors
+        # x is [..., i]
+        # W is [j, i]
+        # grad_output is [... ,j]
+
+        alpha_x, alpha_w = ctx.opt_data
+
+        grad_x_initial = torch.einsum(
+            "...j,ji->...i", grad_output, W
+        )
+
+        if alpha_x is not None:
+            x_updated = x - alpha_x * grad_x_initial
+        else:
+            x_updated = x
+
+        grad_w = torch.einsum(
+            "...j,...i->ji", grad_output, x_updated
+        )
+
+        if alpha_w is not None:
+            w_updated = W - alpha_w * grad_w
+        else:
+            w_updated = W
+
+        grad_x = torch.einsum(
+            "...j,ji->...i", grad_output, w_updated
+        )
+
+        # grad_x.mul_((torch.linalg.vector_norm(grad_x_initial)/torch.linalg.vector_norm(grad_x)))
+
+
+        return grad_x, grad_w, None, None
+
+def optimistic_linear(x, W, alpha_x=0.0, alpha_w=0.0):
+    return OptimisticLinear.apply(x, W, alpha_x, alpha_w)
+
+
 class Snoo:
     """
     @DominikKallusky, @vishal9-team, @vinaysrao
@@ -301,7 +354,7 @@ class CausalSelfAttention(nn.Module):
         B, T = x.size(0), x.size(1)  # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
         q, k, v = (
-            F.linear(x, self.qkvo_w[:3].flatten(end_dim=1))
+            optimistic_linear(x, self.qkvo_w[:3].flatten(end_dim=1))
             .view(B, T, 3 * self.num_heads, self.head_dim)
             .chunk(3, dim=-2)
         )
@@ -324,7 +377,7 @@ class CausalSelfAttention(nn.Module):
         y = y.contiguous().view(
             B, T, self.num_heads * self.head_dim
         )  # re-assemble all head outputs side by side
-        y = F.linear(y, self.qkvo_w[3])
+        y = optimistic_linear(y, self.qkvo_w[3])
         return y
 
 
@@ -338,11 +391,11 @@ class MLP(nn.Module):
         self.proj_w.wd_mul = 2.0
 
     def forward(self, x: Tensor):
-        x = F.linear(x, self.fc_w)
+        x = optimistic_linear(x, self.fc_w)
         x = F.relu(
             x
         ).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        x = F.linear(x, self.proj_w)
+        x = optimistic_linear(x, self.proj_w)
         return x
 
 
@@ -542,7 +595,7 @@ class GPT(nn.Module):
 
         x = norm(x)
         if self.training:
-            logits: Tensor = F.linear(
+            logits: Tensor = optimistic_linear(
                 x.flatten(end_dim=1), self.lm_head_w.bfloat16()
             ).float()
             loss = F.cross_entropy(
@@ -552,7 +605,7 @@ class GPT(nn.Module):
 
         loss = 0
         for i in range(4):
-            logits: Tensor = F.linear(
+            logits: Tensor = optimistic_linear(
                 x.flatten(end_dim=1).chunk(4)[i], self.lm_head_w.bfloat16()
             ).float()
             loss += (
