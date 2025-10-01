@@ -80,7 +80,7 @@ class OptimisticLinear(torch.autograd.Function):
 
         return grad_x, grad_w, None, None
 
-def optimistic_linear(x, W, alpha_x=0.01, alpha_w=0.0):
+def optimistic_linear(x, W, alpha_x=0.1, alpha_w=0.0):
     return OptimisticLinear.apply(x, W, alpha_x, alpha_w)
 
 
