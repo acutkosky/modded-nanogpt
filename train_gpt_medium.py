@@ -877,7 +877,7 @@ inner_hidden_optim = Muon(
     hidden_matrix_params, lr=0.03, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
 )
 inner_optimizers += [inner_hidden_optim]
-outer_optim = GeneralizedAveraging(model, beta=0.9, weight_ema=1.0)
+outer_optim = GeneralizedAveraging(model, beta=1.0, weight_ema=1.0)
 all_optimizers: list[torch.optim.Optimizer] = [outer_optim] + inner_optimizers
 
 
@@ -1018,9 +1018,10 @@ for step in range(train_steps + 1):
         for opt, params in opt2params.items()
     }
     # set optimization hyperparameters
-    for opt in inner_optimizers:
-        for group in opt.param_groups:
-            group["lr"] = group["initial_lr"] * get_lr(step)
+    outer_optim.beta = 1.0 - get_lr(step)
+    # for opt in inner_optimizers:
+    #     for group in opt.param_groups:
+    #         group["lr"] = group["initial_lr"] * get_lr(step)
     for group in inner_hidden_optim.param_groups:
         frac = min(step / 300, 1)  # momentum warmup for muon
         group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
