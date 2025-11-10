@@ -30,6 +30,102 @@ torch._inductor.config.coordinate_descent_tuning = (
 # torch._dynamo.config.compiled_autograd = True
 
 
+class GeneralizedAveraging:
+    @torch.no_grad()
+    def __init__(self, model: nn.Module, beta=0.9, weight_ema=1.0):
+        self.model=model
+        self.prev_params = [p.clone() for p in model.parameters()]
+        self.iter_count = 0
+
+        self.momentum = [torch.zeros_like(p) for p in model.parameters()]
+
+        self.beta = beta
+        self.weight_ema = weight_ema
+
+    @torch.no_grad()
+    def step(self):
+
+        self.iter_count += 1
+
+        # get base updates
+        base_updates = [
+            cur_p - prev_p for cur_p, prev_p in zip(self.model.parameters(), self.prev_params)
+        ]
+
+
+        # see https://arxiv.org/pdf/2405.15682 Theorem 4
+        if self.weight_ema == 1.0:
+            w_t = 1.0
+            w_t_plus_one = 1.0
+
+            w_one_to_t = self.iter_count
+
+            w_one_to_t_plus_one = self.iter_count + 1
+            w_one_to_t_minus_one = self.iter_count - 1
+        else:
+            w_t = 1.0 # actually w_t/w_t
+            w_t_plus_one = 1.0/self.weight_ema # actually w_{t+1}/w_t
+
+            # with r = 1/weight_ema:
+            # w_t = r^{t-1}
+            # w_{1:t} = 1 + r + r^2 + ... + r^{t-1} = (r^{t} - 1)/(r-1)
+            # w_{1:t}/w_t = (r - 1/(r^{t-1}))/(r-1)
+            #             = (1/ema - ema^{t-1}) / (1/ema - 1)
+            #             = (1 - ema^t)/(1 - ema)
+
+            # w_{1:t+1}/w_t = w_{1:t+1}/w_{t+1} * w_{t+1}/w_t = (1 - ema{t+1})/(1 - ema) / ema
+            # w_{1:t-1}/w_t = w_{1:t-1}/w_{t-1} * w_{t-1}/w_t = (1 - ema{t-1})/(1 - ema) * ema
+
+            w_one_to_t = (1.0 - self.weight_ema**(self.iter_count))/(1.0 - self.weight_ema) # actually w_{1:t}/w_t
+            w_one_to_t_plus_one = ((1.0 - self.weight_ema**(self.iter_count+1))/(1.0 - self.weight_ema)) / self.weight_ema  # actually w_{1:t+1}/w_t
+            w_one_to_t_plus_one = ((1.0 - self.weight_ema**(self.iter_count-1))/(1.0 - self.weight_ema)) * self.weight_ema  # actually w_{1:t-1}/w_t
+
+        beta_t = self.beta
+        beta_t_plus_one = self.beta
+
+
+        # update momentum
+        weight_ratio_m = w_t_plus_one  * w_one_to_t_minus_one / (w_t * w_one_to_t_plus_one)
+        weight_ratio_u = w_t_plus_one / w_one_to_t_plus_one
+        for u, m in zip(base_updates, self.momentum):
+            m.copy_(weight_ratio_m * m + weight_ratio_u * u)
+
+        # update param value
+        for u, m, p_prev, p_cur in zip(base_updates, self.momentum, self.prev_params, self.model.parameters()):
+            # we start with:
+            # cur_p = prev_p + u
+            # we want:
+            # cur_p_final = prev_p + (b_t + (b_t - b_{t+1}) * w_{1:t}/w_{t+1}) * m_t + (1-b_t) * u
+            # so:
+            # cur_p_final = cur_p + (b_t + (b_t - b_{t+1}) * w_{1:t}/w_{t+1}) * m_t - b_t * u
+            final_update = (beta_t + (beta_t - beta_t_plus_one) * w_one_to_t / w_t_plus_one) * m - beta_t * u
+
+            self.cur_p.add(final_update)
+            self.prev_p.copy(cur_p)
+
+    def state_dict(self):
+        state_dict = {
+            "iter_count": self.iter_count,
+            "beta": self.beta,
+            "weight_ema": self.weight_ema,
+            "momentum": [m.clone() for p in self.momentum],
+            "prev_params": [p.clone() for p in self.prev_params],
+        }
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        self.iter_count = state_dict["iter_count"]
+        self.beta = state_dict["beta"]
+        self.weight_ema = state_dict["weight_ema"]
+
+
+        for src, dst in zip(state["momentum"], self.momentum):
+            dst.copy(src)
+
+        for src, dst in zip(state["prev_params"], self.prev_params):
+            dst.copy(src)
+
+
 class Snoo:
     """
     @DominikKallusky, @vishal9-team, @vinaysrao
@@ -775,7 +871,7 @@ inner_hidden_optim = Muon(
     hidden_matrix_params, lr=0.03, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
 )
 inner_optimizers += [inner_hidden_optim]
-outer_optim = Snoo(model, lr=0.68, momentum=0.37, k=28)
+outer_optim = GeneralizedAveraging(beta=0.9, weight_ema=1.0)
 all_optimizers: list[torch.optim.Optimizer] = [outer_optim] + inner_optimizers
 
 
