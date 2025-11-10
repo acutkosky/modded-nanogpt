@@ -871,7 +871,7 @@ inner_hidden_optim = Muon(
     hidden_matrix_params, lr=0.03, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
 )
 inner_optimizers += [inner_hidden_optim]
-outer_optim = GeneralizedAveraging(beta=0.9, weight_ema=1.0)
+outer_optim = GeneralizedAveraging(model, beta=0.9, weight_ema=1.0)
 all_optimizers: list[torch.optim.Optimizer] = [outer_optim] + inner_optimizers
 
 
