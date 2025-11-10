@@ -52,8 +52,11 @@ class GeneralizedAveraging:
             cur_p - prev_p for cur_p, prev_p in zip(self.model.parameters(), self.prev_params)
         ]
 
+        # see https://arxiv.org/pdf/2405.15682 Theorem 4 for formulas.
+        # we will assume that the current parameter values are the y_t values in the notation
+        # from the paper, but that the base optimizers are changing the iterates to be
+        # y_t + Delta_t (rather than producing z_t values directly).
 
-        # see https://arxiv.org/pdf/2405.15682 Theorem 4
         if self.weight_ema == 1.0:
             w_t = 1.0
             w_t_plus_one = 1.0
@@ -63,6 +66,9 @@ class GeneralizedAveraging:
             w_one_to_t_plus_one = self.iter_count + 1
             w_one_to_t_minus_one = self.iter_count - 1
         else:
+            # we'll compute everything normalized by w_t so as to avoid expontial blowup
+            # since in the end we only care about ratios of things, this normalization factor
+            # will cancel out.
             w_t = 1.0 # actually w_t/w_t
             w_t_plus_one = 1.0/self.weight_ema # actually w_{t+1}/w_t
 
@@ -100,8 +106,8 @@ class GeneralizedAveraging:
             # cur_p_final = cur_p + (b_t + (b_t - b_{t+1}) * w_{1:t}/w_{t+1}) * m_t - b_t * u
             final_update = (beta_t + (beta_t - beta_t_plus_one) * w_one_to_t / w_t_plus_one) * m - beta_t * u
 
-            cur_p.add(final_update)
-            prev_p.copy(cur_p)
+            cur_p.add_(final_update)
+            prev_p.copy_(cur_p)
 
     def state_dict(self):
         state_dict = {
@@ -120,10 +126,10 @@ class GeneralizedAveraging:
 
 
         for src, dst in zip(state["momentum"], self.momentum):
-            dst.copy(src)
+            dst.copy_(src)
 
         for src, dst in zip(state["prev_params"], self.prev_params):
-            dst.copy(src)
+            dst.copy_(src)
 
 
 class Snoo:
