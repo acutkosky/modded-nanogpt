@@ -125,10 +125,10 @@ class GeneralizedAveraging:
         self.weight_ema = state_dict["weight_ema"]
 
 
-        for src, dst in zip(state["momentum"], self.momentum):
+        for src, dst in zip(state_dict["momentum"], self.momentum):
             dst.copy_(src)
 
-        for src, dst in zip(state["prev_params"], self.prev_params):
+        for src, dst in zip(state_dict["prev_params"], self.prev_params):
             dst.copy_(src)
 
 
