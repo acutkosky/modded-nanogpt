@@ -91,7 +91,7 @@ class GeneralizedAveraging:
             m.copy_(weight_ratio_m * m + weight_ratio_u * u)
 
         # update param value
-        for u, m, p_prev, p_cur in zip(base_updates, self.momentum, self.prev_params, self.model.parameters()):
+        for u, m, prev_p, cur_p in zip(base_updates, self.momentum, self.prev_params, self.model.parameters()):
             # we start with:
             # cur_p = prev_p + u
             # we want:
@@ -100,8 +100,8 @@ class GeneralizedAveraging:
             # cur_p_final = cur_p + (b_t + (b_t - b_{t+1}) * w_{1:t}/w_{t+1}) * m_t - b_t * u
             final_update = (beta_t + (beta_t - beta_t_plus_one) * w_one_to_t / w_t_plus_one) * m - beta_t * u
 
-            self.cur_p.add(final_update)
-            self.prev_p.copy(cur_p)
+            cur_p.add(final_update)
+            prev_p.copy(cur_p)
 
     def state_dict(self):
         state_dict = {
