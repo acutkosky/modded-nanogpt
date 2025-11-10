@@ -108,7 +108,7 @@ class GeneralizedAveraging:
             "iter_count": self.iter_count,
             "beta": self.beta,
             "weight_ema": self.weight_ema,
-            "momentum": [m.clone() for p in self.momentum],
+            "momentum": [m.clone() for m in self.momentum],
             "prev_params": [p.clone() for p in self.prev_params],
         }
         return state_dict
