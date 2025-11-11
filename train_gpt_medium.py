@@ -35,12 +35,21 @@ class GeneralizedPrimalAveraging:
     def __init__(self, model: nn.Module, beta=0.9, weight_ema=1.0):
         self.model=model
         self.prev_params = [p.clone() for p in model.parameters()]
+        self.avg_params = [p.clone() for p in model.parameters()]
         self.iter_count = 0
 
         self.momentum = [torch.zeros_like(p) for p in model.parameters()]
 
         self.beta = beta
         self.weight_ema = weight_ema
+
+    @torch.no_grad()
+    def swap_avg_and_param(self):
+        # swap avg_params and model.parameters()
+        for cur_p, avg_p in zip(self.model.parameters(), self.avg_params):
+            temp = cur_p.clone()
+            cur_p.copy_(avg_p)
+            avg_p.copy_(temp)
 
     @torch.no_grad()
     def step(self):
@@ -66,7 +75,7 @@ class GeneralizedPrimalAveraging:
             w_one_to_t_plus_one = self.iter_count + 1
             w_one_to_t_minus_one = self.iter_count - 1
         else:
-            # we'll compute everything normalized by w_t so as to avoid expontial blowup
+            # we'll compute everything normalized by w_t so as to avoid exponential blowup
             # since in the end we only care about ratios of things, this normalization factor
             # will cancel out.
             w_t = 1.0 # actually w_t/w_t
@@ -97,7 +106,7 @@ class GeneralizedPrimalAveraging:
             m.copy_(weight_ratio_m * m + weight_ratio_u * u)
 
         # update param value
-        for u, m, prev_p, cur_p in zip(base_updates, self.momentum, self.prev_params, self.model.parameters()):
+        for u, m, prev_p, cur_p, avg_p in zip(base_updates, self.momentum, self.prev_params, self.model.parameters(), self.avg_params):
             # we start with:
             # cur_p = prev_p + u
             # we want:
@@ -107,6 +116,10 @@ class GeneralizedPrimalAveraging:
             final_update = (beta_t + (beta_t - beta_t_plus_one) * w_one_to_t / w_t_plus_one) * m - beta_t * u
 
             cur_p.add_(final_update)
+
+            avg_update = (beta_t + (beta_t - 1) * w_one_to_w / w_t_plus_one) * m
+            avg_p.copy_(prev_p + avg_update)
+
             prev_p.copy_(cur_p)
 
     def state_dict(self):
@@ -116,6 +129,7 @@ class GeneralizedPrimalAveraging:
             "weight_ema": self.weight_ema,
             "momentum": [m.clone() for m in self.momentum],
             "prev_params": [p.clone() for p in self.prev_params],
+            "avg_params": [p.clone() for p in self.avg_params],
         }
         return state_dict
 
@@ -129,6 +143,9 @@ class GeneralizedPrimalAveraging:
             dst.copy_(src)
 
         for src, dst in zip(state_dict["prev_params"], self.prev_params):
+            dst.copy_(src)
+
+        for src, dst in zip(state_dict["avg_params"], self.avg_params):
             dst.copy_(src)
 
 
@@ -877,7 +894,7 @@ inner_hidden_optim = Muon(
     hidden_matrix_params, lr=0.03, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
 )
 inner_optimizers += [inner_hidden_optim]
-outer_optim = GeneralizedPrimalAveraging(model, beta=1.0, weight_ema=0.999)
+outer_optim = GeneralizedPrimalAveraging(model, beta=1.0, weight_ema=1.0)
 all_optimizers: list[torch.optim.Optimizer] = [outer_optim] + inner_optimizers
 
 
@@ -971,6 +988,7 @@ for step in range(train_steps + 1):
         dist.barrier()
         training_time_ms += 1000 * (time.perf_counter() - t0)
         model.eval()
+        outer_optim.swap_avg_and_param()
         val_batch_size = world_size * args.val_seq_len
         assert args.val_tokens % val_batch_size == 0
         val_steps = args.val_tokens // val_batch_size
@@ -989,6 +1007,7 @@ for step in range(train_steps + 1):
             f"step:{step}/{train_steps} val_loss:{val_loss:.6f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms",
             console=True,
         )
+        outer_optim.swap_avg_and_param()
         model.train()
         # start the clock again
         dist.barrier()
