@@ -30,7 +30,7 @@ torch._inductor.config.coordinate_descent_tuning = (
 # torch._dynamo.config.compiled_autograd = True
 
 
-class GeneralizedAveraging:
+class GeneralizedPrimalAveraging:
     @torch.no_grad()
     def __init__(self, model: nn.Module, beta=0.9, weight_ema=1.0):
         self.model=model
@@ -84,7 +84,7 @@ class GeneralizedAveraging:
 
             w_one_to_t = (1.0 - self.weight_ema**(self.iter_count))/(1.0 - self.weight_ema) # actually w_{1:t}/w_t
             w_one_to_t_plus_one = ((1.0 - self.weight_ema**(self.iter_count+1))/(1.0 - self.weight_ema)) / self.weight_ema  # actually w_{1:t+1}/w_t
-            w_one_to_t_plus_one = ((1.0 - self.weight_ema**(self.iter_count-1))/(1.0 - self.weight_ema)) * self.weight_ema  # actually w_{1:t-1}/w_t
+            w_one_to_t_minus_one = ((1.0 - self.weight_ema**(self.iter_count-1))/(1.0 - self.weight_ema)) * self.weight_ema  # actually w_{1:t-1}/w_t
 
         beta_t = self.beta
         beta_t_plus_one = self.beta
@@ -877,7 +877,7 @@ inner_hidden_optim = Muon(
     hidden_matrix_params, lr=0.03, momentum=0.95, update_smoothing=0.2, rank=rank, world_size=world_size
 )
 inner_optimizers += [inner_hidden_optim]
-outer_optim = GeneralizedAveraging(model, beta=1.0, weight_ema=0.999)
+outer_optim = GeneralizedPrimalAveraging(model, beta=1.0, weight_ema=0.999)
 all_optimizers: list[torch.optim.Optimizer] = [outer_optim] + inner_optimizers
 
 
