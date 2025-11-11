@@ -117,7 +117,7 @@ class GeneralizedPrimalAveraging:
 
             cur_p.add_(final_update)
 
-            avg_update = (beta_t + (beta_t - 1) * w_one_to_w / w_t_plus_one) * m
+            avg_update = (beta_t + (beta_t - 1) * w_one_to_t / w_t_plus_one) * m
             avg_p.copy_(prev_p + avg_update)
 
             prev_p.copy_(cur_p)
