@@ -448,6 +448,99 @@ def apply_normuon_variance_reduction(v_chunk, second_momentum_buffer, beta2, red
     return v_chunk.mul_(final_scale.type_as(v_chunk))
 
 
+
+@torch.compile(fullgraph=True)
+def km_update(x, y, param, alpha, beta, gamma):
+
+    Tz = param
+
+    x_t_plus_one = (1 - gamma) * y + gamma * Tz
+    x_diff = x_t_plus_one - x
+    y_t_plus_one = x_t_plus_one + alpha * x_diff
+    z_t_plus_one = x_t_plus_one + beta * x_diff
+
+    x.copy_(x_t_plus_one)
+    y.copy_(y_t_plus_one)
+    param.copy_(z_t_plus_one)
+
+
+# -----------------------------------------------------------------------------
+# FixedPoint optimizer
+
+class FixedPoint(torch.optim.Optimizer):
+    '''
+    Views an inner optimizer as a self-map T of the parameter-space, and uses KM-iterations
+    to acclerate finding a fixed point of T:
+
+    y_t     = x_t + alpha_t(x_t - x_{t-1})
+    z_t     = x_t + beta_t(x_t - x_{t-1})
+    x_{t+1} = (1-gamma_t) y_t + gamma_t T(z_t)
+    '''
+
+    def __init__(
+        self,
+        param_groups,
+        alpha: float=0.0,
+        beta: float=0.0,
+        gamma: float=1.0,
+    ):
+
+        defaults = dict(alpha=alpha, beta=beta, gamma=gamma, is_training=True)
+        super().__init__(param_groups, defaults)
+
+    @torch.no_grad()
+    def swap_train_and_eval(self):
+        '''
+        We assume that the parameter values track the "z" state variable during training.
+        This makes it very easy to use the base optimizer as a the "T" operator in the
+        fixed point update.
+        However, you might want to swap back to "x" for evaluation. This function does that.
+        '''
+        for group in self.param_groups:
+            for p in group["params"]:
+                if "x" not in self.state.get(p, {}):
+                    continue
+                temp = torch.clone(p).detach()
+                p.copy_(self.state[p]["x"])
+                self.state[p]["x"].copy_(temp)
+            group["is_training"] = not group["is_training"]
+
+
+    @torch.no_grad()
+    def step(self, base_step=None):
+
+        if base_step is not None:
+            # we assume that "z_t" is stored in the current parameter value.
+            result = base_step()
+            # now the current parameter value is "T z_t"
+        else:
+            # you're allowed to have already done some update outside of this class
+            # in which case you don't need to pass a base optimizer
+            result = None
+
+        for group in self.param_groups:
+            assert group["is_training"], "can only step in training mode: call swap_train_and_eval!"
+            for p in group["params"]:
+                # TRICKY: *don't* skip values where p.grad is None in case the user has already nulled the gradients.
+                # this has the downside that we might do more updates than really desired, but
+                # hopefully it's not a big concern for this protyping phase.
+                state = self.state[p]
+
+                if len(state) == 0:
+                    state["x"] = torch.clone(p).detach()
+                    state["y"] = torch.clone(p).detach()
+                x = state["x"]
+                y = state["y"]
+
+                # convert to tensors to allow compile to work easily
+                alpha_tensor = torch.as_tensor(group["alpha"], dtype=p.dtype, device=p.device)
+                beta_tensor = torch.as_tensor(group["beta"], dtype=p.dtype, device=p.device)
+                gamma_tensor = torch.as_tensor(group["gamma"], dtype=p.dtype, device=p.device)
+
+                km_update(x, y, p, alpha_tensor, beta_tensor, gamma_tensor)
+
+        return result
+
 # -----------------------------------------------------------------------------
 # NorMuon optimizer
 
@@ -1484,6 +1577,12 @@ class TrainingManager():
         self.adam_opt = DistAdam(adam_params, adam_labels, lr=0.004, betas=(0.8, 0.95), eps=1e-8, weight_decay=0.005)
         self.scalar_opt = DistAdam(scalar_params, scalar_labels, lr=0.008, betas=(0.9, 0.99), eps=1e-8, weight_decay=0.005)
         self.muon_opt = NorMuon(muon_params, lr=0.015, momentum=0.95, beta2=0.95, weight_decay=1.2)
+        self.fixed_point_opt = FixedPoint(
+            muon_params + adam_params + scalar_params,
+            alpha=args.fixed_point_alpha,
+            beta=args.fixed_point_beta,
+            gamma=args.fixed_point_gamma
+        )
         self.optimizers = [self.adam_opt, self.scalar_opt, self.muon_opt]
         # split after odd number step
         self.split_step = math.ceil(args.split_embed_frac * args.num_scheduled_iterations) | 1
@@ -1493,8 +1592,10 @@ class TrainingManager():
             opt.freeze_timer = 0
             opt.odd_step_only = False 
             opt.should_sync = True
+            opt.needs_zero_grad = True
             for group in opt.param_groups:
-                group["initial_lr"] = group["lr"]
+                if "lr" in group:
+                    group["initial_lr"] = group["lr"]
 
         # on even steps, only step Muon params
         self.adam_opt.odd_step_only = True
@@ -1570,13 +1671,17 @@ class TrainingManager():
                     for group in opt.param_groups:
                         group["lr"] = group["initial_lr"] * step_lr
                     opt.step()
-                    opt.zero_grad(set_to_none=True)
+                    if opt.needs_zero_grad:
+                        opt.zero_grad(set_to_none=True)
                     if opt.odd_step_only:
                         opt.should_sync = False
         
         if step == self.split_step:
             self.adam_opt.copy_lm_to_embed()
             self.model.split_embed = True
+
+        
+        self.fixed_point_opt.step()
 
     def start_transition(self, freeze_count=40):
         # freeze scalar weights during transition
@@ -1627,6 +1732,11 @@ class Hyperparameters:
     num_iterations: int = num_scheduled_iterations + num_extension_iterations
     cooldown_frac: float = 0.70  # fraction of num_scheduled_iterations spent cooling down the learning rate
     split_embed_frac: float = 2/3/4
+
+    fixed_point_alpha: float = 0.0
+    fixed_point_beta: float = 0.0
+    fixed_point_gamma: float = 1.0
+
     # evaluation and logging
     run_id: str = f"{uuid.uuid4()}"
     val_loss_every: int = 250  # every how many steps to evaluate val loss? 0 for only at the end
@@ -1639,7 +1749,31 @@ class Hyperparameters:
     ws_final: int = 23 # set final validation ws, used for YaRN extension and short window size
     ws_validate_post_yarn_ext: int = 27 # extend long windows out even further after applying YaRN
 
-args = Hyperparameters()
+# command line argument overrides
+def get_args():
+    base_args = Hyperparameters()
+    for arg in sys.argv[1:]:
+        if "=" not in arg:
+            raise ValueError(f"argument {arg} not of the form key=value")
+            sys.exit(1)
+        key, value = arg.split("=", 1)
+        if not hasattr(base_args, key):
+            raise ValueError(f"argument {key} not found")
+            sys.exit(1)
+        original_type = type(getattr(base_args, key))
+        if original_type == bool:
+            value = value.lower() in ('true', '1', 'yes')
+        elif original_type == tuple:
+            value = tuple(eval(value))  # or use ast.literal_eval for safety
+        elif original_type in [int, float]:
+            value = original_type(eval(value))
+        else:
+            value = original_type(value)
+        setattr(base_args, key, value)
+    return base_args
+
+args = get_args()
+
 
 data_path = os.environ.get("DATA_PATH", ".")
 args.train_files = os.path.join(data_path, args.train_files)
@@ -1673,6 +1807,10 @@ def print0(s, console=False):
 
 # begin by printing this file (the Python code)
 print0(code)
+print0("="*100)
+print0("Using arguments:")
+for key, value in args.__dict__.items():
+    print0(f"{key}: {value}")
 print0("="*100)
 # log information about the hardware/software environment this is running on
 print0(f"Running Python {sys.version}")
