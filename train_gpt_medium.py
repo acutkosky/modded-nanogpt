@@ -1680,8 +1680,8 @@ class TrainingManager():
             self.adam_opt.copy_lm_to_embed()
             self.model.split_embed = True
 
-        
-        self.fixed_point_opt.step()
+        if (step + 1) % args.fixed_point_step_period == 0:
+            self.fixed_point_opt.step()
 
     def start_transition(self, freeze_count=40):
         # freeze scalar weights during transition
@@ -1736,6 +1736,8 @@ class Hyperparameters:
     fixed_point_alpha: float = 0.0
     fixed_point_beta: float = 0.0
     fixed_point_gamma: float = 1.0
+    fixed_point_step_period: int = 1
+    fixed_point_swap_on_eval: bool = False
 
     # evaluation and logging
     run_id: str = f"{uuid.uuid4()}"
@@ -1899,6 +1901,12 @@ for step in range(train_steps + 1):
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.perf_counter() - t0)
         model.eval()
+        if args.fixed_point_swap_on_eval:
+            # On the final eval, step the fixed_point optimizer if it wasn't already stepped
+            # after the last training iteration, to ensure x is up-to-date before swapping.
+            if last_step and train_steps % args.fixed_point_step_period != 0:
+                training_manager.fixed_point_opt.step()
+            training_manager.fixed_point_opt.swap_train_and_eval()
         assert args.val_tokens % args.val_batch_size == 0
         val_steps = grad_accum_steps * args.val_tokens // args.val_batch_size
         val_loader = distributed_data_generator(args.val_files, args.val_batch_size, -1, grad_accum_steps=grad_accum_steps, align_to_bos=False)
@@ -1911,6 +1919,8 @@ for step in range(train_steps + 1):
         del val_loader
         dist.reduce(val_loss, 0, op=dist.ReduceOp.AVG)
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        if args.fixed_point_swap_on_eval:
+            training_manager.fixed_point_opt.swap_train_and_eval()
         model.train()
         # start the clock again
         torch.cuda.synchronize()
